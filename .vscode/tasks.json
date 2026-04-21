@@ -4,7 +4,7 @@
     {
       "label": "Build APK to Desktop",
       "type": "shell",
-      "command": "flutter build apk --release && cp build/app/outputs/flutter-apk/app-release.apk ~/Desktop/Uncle_John.apk",
+      "command": "flutter build apk --release && cp ${workspaceFolder}/build/app/outputs/flutter-apk/app-release.apk ~/Desktop/Uncle_John.apk",
       "group": "build",
       "problemMatcher": []
     }
