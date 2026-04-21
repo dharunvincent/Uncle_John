@@ -83,7 +83,7 @@ class _ReportScreenState extends State<ReportScreen> {
     text += '\nScanned with Uncle John app';
     text += '\nBecause Uncle John cares about what you eat.';
 
-    Share.share(text);
+    SharePlus.instance.share(ShareParams(text: text));
   }
 
   @override
