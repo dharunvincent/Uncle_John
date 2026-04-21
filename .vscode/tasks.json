@@ -1,0 +1,12 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build APK to Desktop",
+      "type": "shell",
+      "command": "flutter build apk --release && cp build/app/outputs/flutter-apk/app-release.apk ~/Desktop/Uncle_John.apk",
+      "group": "build",
+      "problemMatcher": []
+    }
+  ]
+}
