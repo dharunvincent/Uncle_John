@@ -91,6 +91,14 @@ class _CropScreenState extends State<CropScreen> {
               onCropped: _handleCropped,
               baseColor: AppColors.darkBg,
               maskColor: Colors.black.withValues(alpha: 0.5),
+              // Keep the crop rect inset from the physical screen edges.
+              // At the default initialSize of 1.0, the corner drag handles
+              // sit flush against the edges, right in the zone Android's
+              // gesture navigation intercepts as a "swipe back" -- which
+              // silently eats the drag before the crop widget ever sees it,
+              // making resize look broken while move (center-drag) still
+              // works fine.
+              initialSize: 0.85,
               cornerDotBuilder: (size, edgeAlignment) =>
                   const DotControl(color: AppColors.primaryOrange),
             ),
