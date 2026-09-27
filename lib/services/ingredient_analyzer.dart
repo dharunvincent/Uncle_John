@@ -67,6 +67,17 @@ class IngredientAnalyzer {
       RegExp(r'packed\s+by', caseSensitive: false),
       RegExp(r'net\s+wt', caseSensitive: false),
       RegExp(r'serving\s+size', caseSensitive: false),
+      RegExp(r'fssai\s*(lic(ense)?\.?\s*(no\.?|number)?)?\s*[:.]?',
+          caseSensitive: false),
+      RegExp(r'\bgstin\b', caseSensitive: false),
+      RegExp(r'\btin\s*(no\.?|number)?\s*[:.]', caseSensitive: false),
+      RegExp(r'\bbatch\s*(no\.?|number)?\s*[:.]', caseSensitive: false),
+      RegExp(r'\bmrp\b', caseSensitive: false),
+      RegExp(r'mfg\.?\s*(date|dt)?\s*[:.]?', caseSensitive: false),
+      RegExp(r'manufacturing\s+date', caseSensitive: false),
+      RegExp(r'(is|are)\s+(the\s+)?(registered\s+)?trade\s*mark',
+          caseSensitive: false),
+      RegExp(r'trade\s*mark\s+of', caseSensitive: false),
     ];
 
     for (final pattern in stopPatterns) {
@@ -76,25 +87,145 @@ class IngredientAnalyzer {
       }
     }
 
-    var parts = text.split(RegExp(r'[,;\n]+'));
+    // OCR line-wraps are just physical formatting, not ingredient
+    // boundaries, so flatten them to spaces before splitting on commas.
+    text = text.replaceAll(RegExp(r'\s+'), ' ');
+
+    final rawParts = _splitTopLevel(text);
 
     List<String> ingredients = [];
-    for (var part in parts) {
-      var cleaned = part
-          .replaceAll(RegExp(r'\([^)]*\)'), '')
+    for (final part in rawParts) {
+      ingredients.addAll(_flattenIngredientToken(part));
+    }
+
+    final cleaned = <String>[];
+    for (var raw in ingredients) {
+      var token = raw
           .replaceAll(RegExp(r'\[[^\]]*\]'), '')
           .replaceAll(RegExp(r'[%]'), '')
           .replaceAll(RegExp(r'\s+'), ' ')
           .trim();
 
-      cleaned = cleaned.replaceAll(RegExp(r'^\d+\.?\s*'), '');
+      // Don't strip a bare INS/E-number token (e.g. "330", "160c") as if it
+      // were list numbering like "1. Sugar" -- it IS the ingredient.
+      if (!_insNumberPattern.hasMatch(token)) {
+        token = token.replaceAll(RegExp(r'^[\d.\*\-•]+\s*'), '');
+        token = token.replaceAll(RegExp(r'[\*]+$'), '').trim();
+      }
 
-      if (cleaned.length >= 2 && cleaned.length <= 80) {
-        ingredients.add(cleaned);
+      if (token.length < 2 || token.length > 80) continue;
+      if (_looksLikeJunkCode(token)) continue;
+
+      cleaned.add(token);
+    }
+
+    return cleaned;
+  }
+
+  /// Splits [text] on commas/semicolons, but only outside of
+  /// parentheses/brackets, so a parenthetical like "(Spices, Salt)" doesn't
+  /// get torn apart by its own internal commas.
+  static List<String> _splitTopLevel(String text) {
+    final result = <String>[];
+    var depth = 0;
+    var start = 0;
+    for (var i = 0; i < text.length; i++) {
+      final ch = text[i];
+      if (ch == '(' || ch == '[') {
+        depth++;
+      } else if (ch == ')' || ch == ']') {
+        if (depth > 0) depth--;
+      } else if (depth == 0 && (ch == ',' || ch == ';')) {
+        result.add(text.substring(start, i));
+        start = i + 1;
+      }
+    }
+    result.add(text.substring(start));
+    return result;
+  }
+
+  static final RegExp _insNumberPattern = RegExp(r'^\d{1,4}[a-z]?$');
+
+  /// Recursively breaks down a single ingredient fragment that may contain a
+  /// parenthetical, e.g.:
+  ///  - "potato (83%)" -> ["potato"]                (percentage annotation dropped)
+  ///  - "flavours (natural and nature identical...)" -> ["flavours"]  (descriptive annotation dropped)
+  ///  - "acidity regulators (330, 296, 334)" -> ["330", "296", "334"] (functional class + INS numbers)
+  ///  - "seasoning (spices, salt, maltodextrin)" -> ["seasoning", "spices", "salt", "maltodextrin"]
+  static List<String> _flattenIngredientToken(String rawPart) {
+    var part = rawPart.trim();
+    part = part.replaceAll(RegExp(r'^[\d.\*\-•\s]+'), '').trim();
+    if (part.isEmpty) return [];
+
+    final openIdx = part.indexOf('(');
+    if (openIdx == -1) {
+      return [part];
+    }
+
+    var depth = 0;
+    var closeIdx = -1;
+    for (var i = openIdx; i < part.length; i++) {
+      if (part[i] == '(') depth++;
+      if (part[i] == ')') {
+        depth--;
+        if (depth == 0) {
+          closeIdx = i;
+          break;
+        }
       }
     }
 
-    return ingredients;
+    final prefix = part.substring(0, openIdx).trim();
+
+    if (closeIdx == -1) {
+      return prefix.isNotEmpty ? [prefix] : [];
+    }
+
+    final inner = part.substring(openIdx + 1, closeIdx).trim();
+    final suffix = part.substring(closeIdx + 1).trim();
+
+    final results = <String>[];
+    // The '%' must be present -- otherwise a bare INS number like "(319)"
+    // would be mistaken for a percentage annotation and silently dropped.
+    final isPercentage = RegExp(r'^\d+(\.\d+)?\s*%$').hasMatch(inner);
+
+    if (inner.isEmpty || isPercentage) {
+      if (prefix.isNotEmpty) results.add(prefix);
+    } else {
+      final subParts = _splitTopLevel(inner)
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
+      final allNumeric = subParts.isNotEmpty &&
+          subParts.every((s) => _insNumberPattern.hasMatch(s));
+
+      if (allNumeric) {
+        results.addAll(subParts);
+      } else if (subParts.length > 1) {
+        if (prefix.isNotEmpty) results.add(prefix);
+        for (final sub in subParts) {
+          results.addAll(_flattenIngredientToken(sub));
+        }
+      } else {
+        if (prefix.isNotEmpty) results.add(prefix);
+      }
+    }
+
+    if (suffix.isNotEmpty) {
+      results.addAll(_flattenIngredientToken(suffix));
+    }
+
+    return results;
+  }
+
+  /// Filters out back-label junk (GSTIN, FSSAI license numbers, batch codes,
+  /// MRP amounts, dates) that is mostly digits, while still allowing short
+  /// INS/E-number style tokens like "330" or "160c" through.
+  static bool _looksLikeJunkCode(String token) {
+    if (_insNumberPattern.hasMatch(token)) return false;
+    final digitCount = token.replaceAll(RegExp(r'[^0-9]'), '').length;
+    if (token.length > 5 && digitCount / token.length >= 0.5) return true;
+    return false;
   }
 
   IngredientInfo _lookupIngredient(String name) {
